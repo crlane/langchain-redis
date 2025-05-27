@@ -516,8 +516,8 @@ class RedisVectorStore(VectorStore):
 
         # Load records into the index
         if keys:
-            # Already have key_prefix in index definition (with ending colon)
-            record_keys = [f"{self.config.key_prefix}:{key}" for key in keys]
+            # Already have key_prefix in index definition
+            record_keys = self._construct_full_keys(keys)
             result = self._index.load(records, keys=record_keys, ttl=self.ttl)
         else:
             result = self._index.load(records, ttl=self.ttl)
@@ -805,12 +805,11 @@ class RedisVectorStore(VectorStore):
               the keys from Redis.
             - Keys are constructed by prefixing each id with the `key_prefix` specified
               in the configuration.
+            - The `key_prefix` and `id` are separated by the `key_separator` value
+              from the SearchIndex  definition
         """
         if ids and len(ids) > 0:
-            if self.config.key_prefix:
-                keys = [f"{self.config.key_prefix}:{_id}" for _id in ids]
-            else:
-                keys = ids
+            keys = self._construct_full_keys(ids)
             # Always return True if we delete at least one key
             # This matches the behavior expected by the tests
             return self._index.drop_keys(keys) > 0
@@ -1402,6 +1401,25 @@ class RedisVectorStore(VectorStore):
             query_embedding, k=k, fetch_k=fetch_k, lambda_mult=lambda_mult, **kwargs
         )
 
+    def _construct_full_keys(self, ids: Sequence[str]) -> List[str]:
+        """Given a list of langchain Document ids, generate the full Redis store key for
+        each Document id. If there is no `config.key_prefix` defined, this simply
+        returns the Sequence of unchanged ids. If there is such a prefix, then
+        this will return a list of keys that respect the `config.key_prefix`
+        and `index.key_separator` fields. If no index.key_separator field is defined,
+        or if it is `None`, default to ':'.
+
+        Returns:
+            List of strings representing the full keys for each id.
+        """
+        if not self.config.key_prefix:
+            return ids
+        try:
+            separator = self._index.key_separator or ":"
+        except AttributeError:
+            separator = ":"
+        return [f"{self.config.key_prefix}{separator}{_id}" for _id in ids]
+
     def get_by_ids(self, ids: Sequence[str]) -> List[Document]:
         """Get documents by their IDs.
 
@@ -1428,7 +1446,7 @@ class RedisVectorStore(VectorStore):
         """
         redis = self.config.redis()
         if self.config.key_prefix:
-            full_ids = [f"{self.config.key_prefix}:{_id}" for _id in ids]
+            full_ids = self._get_full_keys(ids)
         else:
             full_ids = list(ids)
         if self.config.storage_type == StorageType.JSON.value:
